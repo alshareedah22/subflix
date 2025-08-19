@@ -1,4 +1,5 @@
-from fastapi import FastAPI, APIRouter, HTTPException, BackgroundTasks
+from fastapi import FastAPI, APIRouter, HTTPException, BackgroundTasks, Depends, status
+from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 from dotenv import load_dotenv
 from starlette.middleware.cors import CORSMiddleware
 from motor.motor_asyncio import AsyncIOMotorClient
@@ -10,8 +11,10 @@ from pathlib import Path
 from pydantic import BaseModel, Field
 from typing import List, Optional, Dict, Any
 import uuid
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
 import json
+import hashlib
+import jwt
 
 
 ROOT_DIR = Path(__file__).parent
@@ -22,6 +25,14 @@ mongo_url = os.environ['MONGO_URL']
 client = AsyncIOMotorClient(mongo_url)
 db = client[os.environ['DB_NAME']]
 
+# JWT Settings
+JWT_SECRET = os.environ.get('JWT_SECRET', 'your-secret-key-change-in-production')
+JWT_ALGORITHM = 'HS256'
+JWT_EXPIRATION_HOURS = 24
+
+# Security
+security = HTTPBearer()
+
 # Create the main app without a prefix
 app = FastAPI(title="SubFlix - Subtitle Embedding Tool")
 
@@ -30,6 +41,22 @@ api_router = APIRouter(prefix="/api")
 
 
 # Define Models
+class LoginRequest(BaseModel):
+    username: str
+    password: str
+
+class User(BaseModel):
+    id: str = Field(default_factory=lambda: str(uuid.uuid4()))
+    username: str
+    password_hash: str
+    is_admin: bool = True
+    created_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
+
+class LoginResponse(BaseModel):
+    access_token: str
+    token_type: str = "bearer"
+    user: dict
+
 class Settings(BaseModel):
     id: str = Field(default_factory=lambda: str(uuid.uuid4()))
     movies_source_path: str = ""
@@ -81,6 +108,56 @@ class ScanRequest(BaseModel):
 
 
 # Helper functions
+def hash_password(password: str) -> str:
+    """Hash a password using SHA-256"""
+    return hashlib.sha256(password.encode()).hexdigest()
+
+def verify_password(password: str, password_hash: str) -> bool:
+    """Verify a password against its hash"""
+    return hashlib.sha256(password.encode()).hexdigest() == password_hash
+
+def create_jwt_token(user_data: dict) -> str:
+    """Create a JWT token"""
+    payload = {
+        'user_id': user_data['id'],
+        'username': user_data['username'],
+        'exp': datetime.now(timezone.utc) + timedelta(hours=JWT_EXPIRATION_HOURS)
+    }
+    return jwt.encode(payload, JWT_SECRET, algorithm=JWT_ALGORITHM)
+
+def decode_jwt_token(token: str) -> dict:
+    """Decode a JWT token"""
+    try:
+        payload = jwt.decode(token, JWT_SECRET, algorithms=[JWT_ALGORITHM])
+        return payload
+    except jwt.ExpiredSignatureError:
+        raise HTTPException(status_code=401, detail="Token has expired")
+    except jwt.InvalidTokenError:
+        raise HTTPException(status_code=401, detail="Invalid token")
+
+async def get_current_user(credentials: HTTPAuthorizationCredentials = Depends(security)):
+    """Get current user from JWT token"""
+    token = credentials.credentials
+    payload = decode_jwt_token(token)
+    
+    user_data = await db.users.find_one({"id": payload['user_id']})
+    if not user_data:
+        raise HTTPException(status_code=401, detail="User not found")
+    
+    return User(**user_data)
+
+async def create_default_admin():
+    """Create default admin user if none exists"""
+    admin_exists = await db.users.find_one({"username": "admin"})
+    if not admin_exists:
+        admin_user = User(
+            username="admin",
+            password_hash=hash_password("admin123"),
+            is_admin=True
+        )
+        await db.users.insert_one(admin_user.dict())
+        logging.info("Default admin user created: admin/admin123")
+
 def find_video_files(directory: str, extensions: List[str] = [".mp4", ".mkv", ".ts"]) -> List[Dict[str, Any]]:
     """Scan directory for video files"""
     if not os.path.exists(directory):
@@ -220,13 +297,35 @@ async def embed_subtitles(input_video: str, input_subtitle: str, output_path: st
         return False
 
 
-# API Routes
+# Authentication Routes
+@api_router.post("/auth/login", response_model=LoginResponse)
+async def login(login_request: LoginRequest):
+    user_data = await db.users.find_one({"username": login_request.username})
+    
+    if not user_data or not verify_password(login_request.password, user_data["password_hash"]):
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Invalid username or password"
+        )
+    
+    token = create_jwt_token(user_data)
+    
+    return LoginResponse(
+        access_token=token,
+        user={
+            "id": user_data["id"],
+            "username": user_data["username"],
+            "is_admin": user_data["is_admin"]
+        }
+    )
+
+# API Routes (Protected)
 @api_router.get("/")
-async def root():
-    return {"message": "SubFlix - Subtitle Embedding Tool API"}
+async def root(current_user: User = Depends(get_current_user)):
+    return {"message": "SubFlix - Subtitle Embedding Tool API", "user": current_user.username}
 
 @api_router.get("/settings", response_model=Settings)
-async def get_settings():
+async def get_settings(current_user: User = Depends(get_current_user)):
     settings = await db.settings.find_one({}, sort=[("created_at", -1)])
     if not settings:
         # Create default settings
@@ -236,7 +335,7 @@ async def get_settings():
     return Settings(**settings)
 
 @api_router.put("/settings", response_model=Settings)
-async def update_settings(settings_update: SettingsUpdate):
+async def update_settings(settings_update: SettingsUpdate, current_user: User = Depends(get_current_user)):
     existing_settings = await db.settings.find_one({}, sort=[("created_at", -1)])
     
     if existing_settings:
@@ -255,7 +354,7 @@ async def update_settings(settings_update: SettingsUpdate):
         return new_settings
 
 @api_router.post("/scan")
-async def scan_folders(scan_request: ScanRequest):
+async def scan_folders(scan_request: ScanRequest, current_user: User = Depends(get_current_user)):
     settings = await db.settings.find_one({}, sort=[("created_at", -1)])
     if not settings:
         raise HTTPException(status_code=400, detail="Settings not configured")
@@ -295,7 +394,7 @@ async def scan_folders(scan_request: ScanRequest):
     return {"scanned_files": len(scanned_files), "files": scanned_files}
 
 @api_router.get("/video-files", response_model=List[VideoFile])
-async def get_video_files(content_type: Optional[str] = None):
+async def get_video_files(current_user: User = Depends(get_current_user), content_type: Optional[str] = None):
     query = {}
     if content_type:
         query["content_type"] = content_type
@@ -304,7 +403,7 @@ async def get_video_files(content_type: Optional[str] = None):
     return [VideoFile(**video_file) for video_file in video_files]
 
 @api_router.post("/process/{video_file_id}")
-async def process_video(video_file_id: str, background_tasks: BackgroundTasks):
+async def process_video(video_file_id: str, background_tasks: BackgroundTasks, current_user: User = Depends(get_current_user)):
     # Get video file
     video_file_data = await db.video_files.find_one({"id": video_file_id})
     if not video_file_data:
@@ -363,24 +462,24 @@ async def process_video(video_file_id: str, background_tasks: BackgroundTasks):
     return {"message": "Processing started", "job_id": job.id}
 
 @api_router.get("/jobs", response_model=List[ProcessingJob])
-async def get_processing_jobs():
+async def get_processing_jobs(current_user: User = Depends(get_current_user)):
     jobs = await db.processing_jobs.find().sort("created_at", -1).to_list(1000)
     return [ProcessingJob(**job) for job in jobs]
 
 @api_router.get("/jobs/{job_id}", response_model=ProcessingJob)
-async def get_job_status(job_id: str):
+async def get_job_status(job_id: str, current_user: User = Depends(get_current_user)):
     job_data = await db.processing_jobs.find_one({"id": job_id})
     if not job_data:
         raise HTTPException(status_code=404, detail="Job not found")
     return ProcessingJob(**job_data)
 
 @api_router.delete("/video-files")
-async def clear_video_files():
+async def clear_video_files(current_user: User = Depends(get_current_user)):
     await db.video_files.delete_many({})
     return {"message": "All video files cleared"}
 
 @api_router.delete("/jobs")
-async def clear_jobs():
+async def clear_jobs(current_user: User = Depends(get_current_user)):
     await db.processing_jobs.delete_many({})
     return {"message": "All jobs cleared"}
 
@@ -402,6 +501,10 @@ logging.basicConfig(
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
 )
 logger = logging.getLogger(__name__)
+
+@app.on_event("startup")
+async def startup_event():
+    await create_default_admin()
 
 @app.on_event("shutdown")
 async def shutdown_db_client():

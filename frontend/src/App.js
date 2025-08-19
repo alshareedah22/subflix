@@ -22,36 +22,83 @@ import {
   Upload, 
   Folder,
   FileVideo,
-  Subtitles
+  Subtitles,
+  LogOut
 } from "lucide-react";
+import Login from "./Login";
 
 const BACKEND_URL = process.env.REACT_APP_BACKEND_URL;
 const API = `${BACKEND_URL}/api`;
 
 function App() {
+  const [user, setUser] = useState(null);
+  const [loading, setLoading] = useState(true);
   const [activeTab, setActiveTab] = useState("dashboard");
   const [settings, setSettings] = useState({});
   const [videoFiles, setVideoFiles] = useState([]);
   const [jobs, setJobs] = useState([]);
-  const [loading, setLoading] = useState(false);
+  const [scanLoading, setScanLoading] = useState(false);
   const [scanningType, setScanningType] = useState("");
   
-  // Load initial data
+  // Check authentication on app load
   useEffect(() => {
-    loadSettings();
-    loadVideoFiles();
-    loadJobs();
+    const token = localStorage.getItem('subflix_token');
+    const userData = localStorage.getItem('subflix_user');
+    
+    if (token && userData) {
+      try {
+        const parsedUser = JSON.parse(userData);
+        setUser(parsedUser);
+        // Set default authorization header
+        axios.defaults.headers.common['Authorization'] = `Bearer ${token}`;
+      } catch (error) {
+        localStorage.removeItem('subflix_token');
+        localStorage.removeItem('subflix_user');
+      }
+    }
+    setLoading(false);
   }, []);
+  
+  // Load initial data when authenticated
+  useEffect(() => {
+    if (user) {
+      loadSettings();
+      loadVideoFiles();
+      loadJobs();
+    }
+  }, [user]);
   
   // Auto-refresh jobs every 5 seconds
   useEffect(() => {
-    const interval = setInterval(() => {
-      if (activeTab === "jobs") {
+    let interval;
+    if (user && activeTab === "jobs") {
+      interval = setInterval(() => {
         loadJobs();
-      }
-    }, 5000);
-    return () => clearInterval(interval);
-  }, [activeTab]);
+      }, 5000);
+    }
+    return () => {
+      if (interval) clearInterval(interval);
+    };
+  }, [activeTab, user]);
+
+  const handleLogin = (userData) => {
+    setUser(userData);
+    const token = localStorage.getItem('subflix_token');
+    if (token) {
+      axios.defaults.headers.common['Authorization'] = `Bearer ${token}`;
+    }
+  };
+
+  const handleLogout = () => {
+    localStorage.removeItem('subflix_token');
+    localStorage.removeItem('subflix_user');
+    delete axios.defaults.headers.common['Authorization'];
+    setUser(null);
+    setActiveTab("dashboard");
+    setVideoFiles([]);
+    setJobs([]);
+    setSettings({});
+  };
 
   const loadSettings = async () => {
     try {
@@ -59,6 +106,9 @@ function App() {
       setSettings(response.data);
     } catch (error) {
       console.error("Error loading settings:", error);
+      if (error.response?.status === 401) {
+        handleLogout();
+      }
     }
   };
 
@@ -68,6 +118,9 @@ function App() {
       setVideoFiles(response.data);
     } catch (error) {
       console.error("Error loading video files:", error);
+      if (error.response?.status === 401) {
+        handleLogout();
+      }
     }
   };
 
@@ -77,25 +130,32 @@ function App() {
       setJobs(response.data);
     } catch (error) {
       console.error("Error loading jobs:", error);
+      if (error.response?.status === 401) {
+        handleLogout();
+      }
     }
   };
 
   const saveSettings = async () => {
     try {
-      setLoading(true);
+      setScanLoading(true);
       await axios.put(`${API}/settings`, settings);
       alert("Settings saved successfully!");
     } catch (error) {
       console.error("Error saving settings:", error);
-      alert("Error saving settings");
+      if (error.response?.status === 401) {
+        handleLogout();
+      } else {
+        alert("Error saving settings");
+      }
     } finally {
-      setLoading(false);
+      setScanLoading(false);
     }
   };
 
   const scanFolders = async (contentType) => {
     try {
-      setLoading(true);
+      setScanLoading(true);
       setScanningType(contentType);
       const response = await axios.post(`${API}/scan`, {
         content_type: contentType
@@ -104,25 +164,33 @@ function App() {
       await loadVideoFiles();
     } catch (error) {
       console.error("Error scanning folders:", error);
-      alert("Error scanning folders");
+      if (error.response?.status === 401) {
+        handleLogout();
+      } else {
+        alert("Error scanning folders");
+      }
     } finally {
-      setLoading(false);
+      setScanLoading(false);
       setScanningType("");
     }
   };
 
   const processVideo = async (videoFileId) => {
     try {
-      setLoading(true);
+      setScanLoading(true);
       await axios.post(`${API}/process/${videoFileId}`);
       alert("Processing started!");
       await loadVideoFiles();
       await loadJobs();
     } catch (error) {
       console.error("Error starting processing:", error);
-      alert("Error starting processing");
+      if (error.response?.status === 401) {
+        handleLogout();
+      } else {
+        alert("Error starting processing");
+      }
     } finally {
-      setLoading(false);
+      setScanLoading(false);
     }
   };
 
@@ -133,6 +201,9 @@ function App() {
         await loadVideoFiles();
       } catch (error) {
         console.error("Error clearing video files:", error);
+        if (error.response?.status === 401) {
+          handleLogout();
+        }
       }
     }
   };
@@ -144,6 +215,9 @@ function App() {
         await loadJobs();
       } catch (error) {
         console.error("Error clearing jobs:", error);
+        if (error.response?.status === 401) {
+          handleLogout();
+        }
       }
     }
   };
@@ -176,6 +250,23 @@ function App() {
     return parseFloat((bytes / Math.pow(k, i)).toFixed(2)) + " " + sizes[i];
   };
 
+  // Show loading spinner during initial load
+  if (loading) {
+    return (
+      <div className="min-h-screen bg-gray-950 flex items-center justify-center">
+        <div className="text-center">
+          <div className="animate-spin rounded-full h-12 w-12 border-b-2 border-blue-500 mx-auto mb-4"></div>
+          <p className="text-gray-300">Loading SubFlix...</p>
+        </div>
+      </div>
+    );
+  }
+
+  // Show login page if not authenticated
+  if (!user) {
+    return <Login onLogin={handleLogin} />;
+  }
+
   const movieFiles = videoFiles.filter(f => f.content_type === "movies");
   const tvFiles = videoFiles.filter(f => f.content_type === "tvshows");
   const filesWithSubtitles = videoFiles.filter(f => f.subtitle_path);
@@ -189,11 +280,24 @@ function App() {
           <div className="flex items-center space-x-4">
             <div className="flex items-center space-x-2">
               <Subtitles className="w-8 h-8 text-blue-500" />
-              <h1 className="text-2xl font-bold text-white">SubFlix</h1>
+              <h1 className="text-2xl font-bold text-gray-100">SubFlix</h1>
             </div>
             <Badge variant="secondary" className="bg-blue-500/20 text-blue-400">
               Subtitle Embedding Tool
             </Badge>
+          </div>
+          
+          <div className="flex items-center space-x-4">
+            <span className="text-gray-300">Welcome, {user.username}</span>
+            <Button
+              onClick={handleLogout}
+              variant="ghost"
+              size="sm"
+              className="text-gray-300 hover:text-gray-100"
+            >
+              <LogOut className="w-4 h-4 mr-2" />
+              Logout
+            </Button>
           </div>
         </div>
       </div>
@@ -222,11 +326,11 @@ function App() {
             <div className="grid grid-cols-1 md:grid-cols-4 gap-6">
               <Card className="bg-gray-900 border-gray-700">
                 <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
-                  <CardTitle className="text-sm font-medium">Total Videos</CardTitle>
+                  <CardTitle className="text-sm font-medium text-gray-300">Total Videos</CardTitle>
                   <FileVideo className="h-4 w-4 text-gray-400" />
                 </CardHeader>
                 <CardContent>
-                  <div className="text-2xl font-bold text-white">{videoFiles.length}</div>
+                  <div className="text-2xl font-bold text-gray-100">{videoFiles.length}</div>
                   <p className="text-xs text-gray-400">
                     {movieFiles.length} movies, {tvFiles.length} TV shows
                   </p>
@@ -235,7 +339,7 @@ function App() {
 
               <Card className="bg-gray-900 border-gray-700">
                 <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
-                  <CardTitle className="text-sm font-medium">With Subtitles</CardTitle>
+                  <CardTitle className="text-sm font-medium text-gray-300">With Subtitles</CardTitle>
                   <Subtitles className="h-4 w-4 text-blue-400" />
                 </CardHeader>
                 <CardContent>
@@ -248,7 +352,7 @@ function App() {
 
               <Card className="bg-gray-900 border-gray-700">
                 <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
-                  <CardTitle className="text-sm font-medium">Processed</CardTitle>
+                  <CardTitle className="text-sm font-medium text-gray-300">Processed</CardTitle>
                   <Check className="h-4 w-4 text-green-400" />
                 </CardHeader>
                 <CardContent>
@@ -261,7 +365,7 @@ function App() {
 
               <Card className="bg-gray-900 border-gray-700">
                 <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
-                  <CardTitle className="text-sm font-medium">Active Jobs</CardTitle>
+                  <CardTitle className="text-sm font-medium text-gray-300">Active Jobs</CardTitle>
                   <Clock className="h-4 w-4 text-yellow-400" />
                 </CardHeader>
                 <CardContent>
@@ -278,7 +382,7 @@ function App() {
             {/* Quick Actions */}
             <Card className="bg-gray-900 border-gray-700">
               <CardHeader>
-                <CardTitle className="text-white">Quick Actions</CardTitle>
+                <CardTitle className="text-gray-100">Quick Actions</CardTitle>
               </CardHeader>
               <CardContent className="space-y-4">
                 <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
@@ -289,7 +393,7 @@ function App() {
                     </h3>
                     <Button
                       onClick={() => scanFolders("movies")}
-                      disabled={loading || scanningType === "movies"}
+                      disabled={scanLoading || scanningType === "movies"}
                       className="w-full bg-blue-600 hover:bg-blue-700"
                     >
                       {scanningType === "movies" ? "Scanning..." : "Scan Movies Folder"}
@@ -303,7 +407,7 @@ function App() {
                     </h3>
                     <Button
                       onClick={() => scanFolders("tvshows")}
-                      disabled={loading || scanningType === "tvshows"}
+                      disabled={scanLoading || scanningType === "tvshows"}
                       className="w-full bg-blue-600 hover:bg-blue-700"
                     >
                       {scanningType === "tvshows" ? "Scanning..." : "Scan TV Shows Folder"}
@@ -317,7 +421,7 @@ function App() {
           {/* Library Tab */}
           <TabsContent value="library" className="space-y-6">
             <div className="flex items-center justify-between">
-              <h2 className="text-2xl font-bold text-white">Video Library</h2>
+              <h2 className="text-2xl font-bold text-gray-100">Video Library</h2>
               <Button 
                 onClick={clearVideoFiles} 
                 variant="destructive"
@@ -380,7 +484,7 @@ function App() {
                           {file.subtitle_path && file.status === "pending" && (
                             <Button
                               onClick={() => processVideo(file.id)}
-                              disabled={loading}
+                              disabled={scanLoading}
                               className="bg-blue-600 hover:bg-blue-700"
                             >
                               <Play className="w-4 h-4 mr-1" />
@@ -405,7 +509,7 @@ function App() {
           {/* Jobs Tab */}
           <TabsContent value="jobs" className="space-y-6">
             <div className="flex items-center justify-between">
-              <h2 className="text-2xl font-bold text-white">Processing Jobs</h2>
+              <h2 className="text-2xl font-bold text-gray-100">Processing Jobs</h2>
               <Button 
                 onClick={clearJobs} 
                 variant="destructive"
@@ -438,7 +542,7 @@ function App() {
                                 <span>{job.status}</span>
                               </span>
                             </Badge>
-                            <h3 className="text-lg font-medium text-white">
+                            <h3 className="text-lg font-medium text-gray-100">
                               {job.input_video_path.split('/').pop()}
                             </h3>
                           </div>
@@ -493,12 +597,12 @@ function App() {
 
           {/* Settings Tab */}
           <TabsContent value="settings" className="space-y-6">
-            <h2 className="text-2xl font-bold text-white">Settings</h2>
+            <h2 className="text-2xl font-bold text-gray-100">Settings</h2>
 
             {/* Folder Configuration */}
             <Card className="bg-gray-900 border-gray-700">
               <CardHeader>
-                <CardTitle className="text-white flex items-center">
+                <CardTitle className="text-gray-100 flex items-center">
                   <Folder className="w-5 h-5 mr-2" />
                   Folder Configuration
                 </CardTitle>
@@ -520,7 +624,7 @@ function App() {
                           placeholder="/path/to/movies"
                           value={settings.movies_source_path || ""}
                           onChange={(e) => setSettings({...settings, movies_source_path: e.target.value})}
-                          className="bg-gray-800 border-gray-600 text-white"
+                          className="bg-gray-800 border-gray-600 text-gray-100"
                         />
                       </div>
                       <div>
@@ -532,7 +636,7 @@ function App() {
                           placeholder="/path/to/processed/movies"
                           value={settings.movies_output_path || ""}
                           onChange={(e) => setSettings({...settings, movies_output_path: e.target.value})}
-                          className="bg-gray-800 border-gray-600 text-white"
+                          className="bg-gray-800 border-gray-600 text-gray-100"
                         />
                       </div>
                     </div>
@@ -553,7 +657,7 @@ function App() {
                           placeholder="/path/to/tvshows"
                           value={settings.tvshows_source_path || ""}
                           onChange={(e) => setSettings({...settings, tvshows_source_path: e.target.value})}
-                          className="bg-gray-800 border-gray-600 text-white"
+                          className="bg-gray-800 border-gray-600 text-gray-100"
                         />
                       </div>
                       <div>
@@ -565,7 +669,7 @@ function App() {
                           placeholder="/path/to/processed/tvshows"
                           value={settings.tvshows_output_path || ""}
                           onChange={(e) => setSettings({...settings, tvshows_output_path: e.target.value})}
-                          className="bg-gray-800 border-gray-600 text-white"
+                          className="bg-gray-800 border-gray-600 text-gray-100"
                         />
                       </div>
                     </div>
@@ -577,7 +681,7 @@ function App() {
             {/* BunnyCDN Configuration */}
             <Card className="bg-gray-900 border-gray-700">
               <CardHeader>
-                <CardTitle className="text-white flex items-center">
+                <CardTitle className="text-gray-100 flex items-center">
                   <Upload className="w-5 h-5 mr-2" />
                   BunnyCDN Configuration
                 </CardTitle>
@@ -594,7 +698,7 @@ function App() {
                       placeholder="Your BunnyCDN API Key"
                       value={settings.bunnycdn_api_key || ""}
                       onChange={(e) => setSettings({...settings, bunnycdn_api_key: e.target.value})}
-                      className="bg-gray-800 border-gray-600 text-white"
+                      className="bg-gray-800 border-gray-600 text-gray-100"
                     />
                   </div>
                   
@@ -607,7 +711,7 @@ function App() {
                       placeholder="your-storage-zone"
                       value={settings.bunnycdn_storage_zone || ""}
                       onChange={(e) => setSettings({...settings, bunnycdn_storage_zone: e.target.value})}
-                      className="bg-gray-800 border-gray-600 text-white"
+                      className="bg-gray-800 border-gray-600 text-gray-100"
                     />
                   </div>
                   
@@ -620,7 +724,7 @@ function App() {
                       placeholder="https://your-zone.b-cdn.net"
                       value={settings.bunnycdn_base_url || ""}
                       onChange={(e) => setSettings({...settings, bunnycdn_base_url: e.target.value})}
-                      className="bg-gray-800 border-gray-600 text-white"
+                      className="bg-gray-800 border-gray-600 text-gray-100"
                     />
                   </div>
                   
@@ -632,7 +736,7 @@ function App() {
                       value={settings.bunnycdn_service_type || "storage"}
                       onValueChange={(value) => setSettings({...settings, bunnycdn_service_type: value})}
                     >
-                      <SelectTrigger className="bg-gray-800 border-gray-600 text-white">
+                      <SelectTrigger className="bg-gray-800 border-gray-600 text-gray-100">
                         <SelectValue placeholder="Select service type" />
                       </SelectTrigger>
                       <SelectContent className="bg-gray-800 border-gray-600">
@@ -648,10 +752,10 @@ function App() {
             <div className="flex justify-end">
               <Button
                 onClick={saveSettings}
-                disabled={loading}
+                disabled={scanLoading}
                 className="bg-blue-600 hover:bg-blue-700"
               >
-                {loading ? "Saving..." : "Save Settings"}
+                {scanLoading ? "Saving..." : "Save Settings"}
               </Button>
             </div>
           </TabsContent>
