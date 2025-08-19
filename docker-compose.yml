@@ -1,0 +1,46 @@
+version: '3.8'
+
+services:
+  subflix:
+    build: .
+    container_name: subflix-app
+    restart: unless-stopped
+    ports:
+      - "3000:80"  # Map container port 80 to host port 3000
+    environment:
+      - MONGO_URL=mongodb://mongodb:27017
+      - DB_NAME=subflix
+      - JWT_SECRET=${JWT_SECRET:-your-secret-key-change-in-production}
+      - CORS_ORIGINS=*
+    volumes:
+      # Mount your media directories (UPDATE THESE PATHS)
+      - ${MOVIES_SOURCE_PATH:-./data/movies}:/data/movies:ro
+      - ${TVSHOWS_SOURCE_PATH:-./data/tvshows}:/data/tvshows:ro
+      - ${MOVIES_OUTPUT_PATH:-./data/processed/movies}:/data/processed/movies
+      - ${TVSHOWS_OUTPUT_PATH:-./data/processed/tvshows}:/data/processed/tvshows
+      # Optional: Mount for persistent logs
+      - ./logs:/var/log/supervisor
+    depends_on:
+      - mongodb
+    networks:
+      - subflix-network
+
+  mongodb:
+    image: mongo:7.0
+    container_name: subflix-mongodb
+    restart: unless-stopped
+    environment:
+      MONGO_INITDB_DATABASE: subflix
+    volumes:
+      - mongodb_data:/data/db
+    ports:
+      - "27017:27017"  # Optional: expose MongoDB port
+    networks:
+      - subflix-network
+
+volumes:
+  mongodb_data:
+
+networks:
+  subflix-network:
+    driver: bridge
