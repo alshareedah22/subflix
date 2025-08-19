@@ -11,7 +11,43 @@ body {
   -webkit-font-smoothing: antialiased;
   -moz-osx-font-smoothing: grayscale;
   background-color: #0a0a0a;
-  color: #f1f5f9;
+  color: #f8fafc;
+}
+
+/* Ensure all text elements are light */
+* {
+  color: inherit;
+}
+
+h1, h2, h3, h4, h5, h6 {
+  color: #f8fafc !important;
+}
+
+p, span, div, label {
+  color: #e2e8f0 !important;
+}
+
+/* Override any darker text */
+.text-gray-400 {
+  color: #cbd5e1 !important;
+}
+
+.text-gray-300 {
+  color: #e2e8f0 !important;
+}
+
+.text-gray-200 {
+  color: #f1f5f9 !important;
+}
+
+/* Make sure all input text is visible */
+input, textarea, select {
+  color: #f8fafc !important;
+}
+
+/* Card text improvements */
+.card-content {
+  color: #e2e8f0 !important;
 }
 
 code {
